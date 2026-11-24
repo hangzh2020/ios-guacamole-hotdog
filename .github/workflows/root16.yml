@@ -1,0 +1,55 @@
+name: root16
+on:
+  workflow_dispatch:
+    inputs:
+      size:
+        description: root image size
+        default: "16G"
+jobs:
+  root:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+      - name: Install host tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential cmake pkg-config git \
+            libfuse3-dev fuse3 libattr1-dev zlib1g-dev libbz2-dev libssl-dev \
+            hfsprogs rsync zstd curl python3
+      - name: Build apfs-fuse
+        run: |
+          sudo git clone --depth 1 https://github.com/sgan81/apfs-fuse.git /opt/apfs-fuse
+          sudo git -C /opt/apfs-fuse submodule update --init --recursive
+          sudo cmake -S /opt/apfs-fuse -B /opt/apfs-fuse/build -DCMAKE_BUILD_TYPE=Release
+          sudo cmake --build /opt/apfs-fuse/build -j"$(nproc)"
+          sudo install -m0755 /opt/apfs-fuse/build/apfs-fuse /usr/local/bin/apfs-fuse
+      - name: Fetch IPSW members
+        run: |
+          mkdir -p work
+          IPSW="https://updates.cdn-apple.com/2025FallFCS/fullrestores/122-77006/1158E502-D76D-4226-AA06-ED5E30CD1111/iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw"
+          python3 tools/remotezip.py "$IPSW" "087-86698-044.dmg" work
+          python3 tools/remotezip.py "$IPSW" "087-86593-047.dmg" work
+          python3 tools/remotezip.py "$IPSW" "087-86715-047.dmg" work
+          ls -l work; df -h /
+      - name: Build root image
+        run: |
+          sudo bash tools/mkiosroot.sh work/087-86698-044.dmg work/087-86593-047.dmg \
+            work/087-86715-047.dmg "$RUNNER_TEMP/ios16-root.img" "${{ inputs.size }}"
+          df -h /
+      - name: Compress
+        run: |
+          zstd -T0 -3 --long=27 -f "$RUNNER_TEMP/ios16-root.img" -o "$RUNNER_TEMP/ios16-root.img.zst"
+          sha256sum "$RUNNER_TEMP/ios16-root.img" | tee "$RUNNER_TEMP/root.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios16-root
+          path: |
+            ${{ runner.temp }}/ios16-root.img.zst
+            ${{ runner.temp }}/root.sha256
+          compression-level: 0
